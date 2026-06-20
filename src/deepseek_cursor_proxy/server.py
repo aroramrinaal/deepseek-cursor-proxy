@@ -19,6 +19,7 @@ from .config import (
     ProxyConfig,
     default_config_path,
     default_reasoning_content_path,
+    default_usage_path,
 )
 from .logging import (
     LOG,
@@ -34,6 +35,7 @@ from .transform import (
     prepare_upstream_request,
     rewrite_response_body,
 )
+from .usage_store import UsageStore
 
 
 class RequestBodyTooLarge(ValueError):
@@ -50,6 +52,7 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
+    usage_store: UsageStore | None
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -66,6 +69,10 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
     @property
     def trace_writer(self) -> TraceWriter | None:
         return getattr(self.server, "trace_writer", None)
+
+    @property
+    def usage_store(self) -> UsageStore | None:
+        return getattr(self.server, "usage_store", None)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -315,6 +322,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                         record_response_scope=prepared.record_response_scope,
                         record_response_messages=prepared.record_response_messages,
                         record_response_contexts=prepared.record_response_contexts,
+                    )
+                if self.usage_store is not None:
+                    self.usage_store.record(
+                        sent_response.usage,
+                        model=prepared.original_model,
+                        streamed=bool(prepared.payload.get("stream")),
+                        elapsed_ms=elapsed_ms(started),
                     )
                 if not sent_response.sent:
                     spinner.stop()
@@ -1303,10 +1317,12 @@ def main(argv: list[str] | None = None) -> int:
         max_age_seconds=config.reasoning_cache_max_age_seconds,
         max_rows=config.reasoning_cache_max_rows,
     )
+    usage_store = UsageStore(default_usage_path())
     if args.clear_reasoning_cache:
         deleted = store.clear()
         LOG.info("cleared %s reasoning cache row(s)", deleted)
         store.close()
+        usage_store.close()
         return 0
     trace_writer: TraceWriter | None = None
     if config.trace_dir is not None:
@@ -1315,11 +1331,13 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             LOG.error("failed to initialize trace directory: %s", exc)
             store.close()
+            usage_store.close()
             return 2
     server = DeepSeekProxyServer((config.host, config.port), DeepSeekProxyHandler)
     server.config = config
     server.reasoning_store = store
     server.trace_writer = trace_writer
+    server.usage_store = usage_store
 
     tunnel: NgrokTunnel | None = None
     public_url: str | None = None
@@ -1332,6 +1350,7 @@ def main(argv: list[str] | None = None) -> int:
             LOG.error("%s", exc)
             server.server_close()
             store.close()
+            usage_store.close()
             return 2
     local_base_url = f"http://{config.host}:{config.port}/v1"
     api_base_url = (
@@ -1375,6 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
             tunnel.stop()
         server.server_close()
         store.close()
+        usage_store.close()
     return 0
 
 

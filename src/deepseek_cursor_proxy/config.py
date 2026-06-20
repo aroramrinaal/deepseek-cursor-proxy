@@ -10,6 +10,7 @@ import yaml
 APP_DIR_NAME = ".deepseek-cursor-proxy"
 CONFIG_FILE_NAME = "config.yaml"
 REASONING_CONTENT_FILE_NAME = "reasoning_content.sqlite3"
+USAGE_FILE_NAME = "usage.sqlite3"
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
@@ -72,6 +73,10 @@ def default_config_path() -> Path:
 
 def default_reasoning_content_path() -> Path:
     return default_app_dir() / REASONING_CONTENT_FILE_NAME
+
+
+def default_usage_path() -> Path:
+    return default_app_dir() / USAGE_FILE_NAME
 
 
 def populate_default_config_file(config_path: Path) -> None:

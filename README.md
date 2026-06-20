@@ -82,6 +82,42 @@ deepseek-cursor-proxy
 
 When ngrok is enabled, `deepseek-cursor-proxy` will print the ngrok public URL on start. If it differs from the one in Cursor, update it in Cursor's Base URL field.
 
+If you want a friendlier command on this machine, create a `deepseek` launcher that points at the repo-local script and then use:
+
+```bash
+deepseek
+deepseek status
+deepseek stop
+deepseek restart
+deepseek stats
+```
+
+That wrapper is just a convenience layer around the same proxy process.
+
+### Local Token Ledger and Balance
+
+The convenience launcher can show a small local ledger of the requests that
+passed through this proxy:
+
+```bash
+deepseek stats --no-balance
+```
+
+It records input, output, reasoning, cache-hit, and cache-miss tokens in
+`~/.deepseek-cursor-proxy/usage.sqlite3`. This is intentionally local and only
+counts calls made through this proxy; it is not DeepSeek's complete platform
+history. To include current platform balance, set a key in the terminal session
+that runs the command, then run:
+
+```bash
+export DEEPSEEK_API_KEY='your-key'
+deepseek stats
+```
+
+The key is used only for `GET https://api.deepseek.com/user/balance` and is not
+written into the ledger or proxy config. Add `--json` when you want the data in
+machine-readable form.
+
 If you use a **reserved ngrok endpoint or your own domain** (instead of a URL assigned by ngrok), pass it through to the ngrok agent as `--url=…`. Set `ngrok_url` in `~/.deepseek-cursor-proxy/config.yaml` or use `--ngrok-url` on the command line (see `ngrok http --help`). Example:
 
 ```yaml
