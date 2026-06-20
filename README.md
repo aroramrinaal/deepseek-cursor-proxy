@@ -94,29 +94,18 @@ deepseek stats
 
 That wrapper is just a convenience layer around the same proxy process.
 
-### Local Token Ledger and Balance
+### Live Platform Usage Bridge (Experimental)
 
-The convenience launcher can show a small local ledger of the requests that
-passed through this proxy:
+The optional [browser bridge](browser-bridge/) makes `deepseek stats` a live,
+account-wide snapshot from the data already returned to the signed-in DeepSeek
+Platform Usage page: monthly token usage, monthly spend, wallets, and DeepSeek's
+available-token estimate. It does not read or save the Platform bearer token,
+cookies, or API key.
 
-```bash
-deepseek stats --no-balance
-```
-
-It records input, output, reasoning, cache-hit, and cache-miss tokens in
-`~/.deepseek-cursor-proxy/usage.sqlite3`. This is intentionally local and only
-counts calls made through this proxy; it is not DeepSeek's complete platform
-history. To include current platform balance, set a key in the terminal session
-that runs the command, then run:
-
-```bash
-export DEEPSEEK_API_KEY='your-key'
-deepseek stats
-```
-
-The key is used only for `GET https://api.deepseek.com/user/balance` and is not
-written into the ledger or proxy config. Add `--json` when you want the data in
-machine-readable form.
+Install the unpacked extension using [its setup guide](browser-bridge/README.md),
+then refresh `https://platform.deepseek.com/usage`. The proxy keeps the latest
+summary only in memory, so a restart requires another page refresh. The page
+does not need to remain open once the summary has been received.
 
 If you use a **reserved ngrok endpoint or your own domain** (instead of a URL assigned by ngrok), pass it through to the ngrok agent as `--url=…`. Set `ngrok_url` in `~/.deepseek-cursor-proxy/config.yaml` or use `--ngrok-url` on the command line (see `ngrok http --help`). Example:
 

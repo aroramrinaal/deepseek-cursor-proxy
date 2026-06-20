@@ -2,100 +2,72 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .config import default_usage_path
-from .usage_store import UsageStore
+from .platform_summary import browser_bridge_token
 
 
-def fetch_balance(api_key: str, base_url: str) -> dict[str, Any]:
+def fetch_platform_summary(proxy_base_url: str) -> dict[str, Any]:
     request = Request(
-        f"{base_url.rstrip('/')}/user/balance",
-        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+        f"{proxy_base_url.rstrip('/')}/v1/platform-summary",
+        headers={"X-DeepSeek-Bridge-Token": browser_bridge_token()},
     )
-    with urlopen(request, timeout=15) as response:
+    with urlopen(request, timeout=3) as response:
         payload = json.loads(response.read().decode("utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError("DeepSeek returned an unexpected balance response")
+        raise ValueError("Local browser bridge returned an unexpected response")
     return payload
 
 
-def format_count(value: int) -> str:
-    return f"{value:,}"
-
-
-def print_summary(label: str, summary: dict[str, int]) -> None:
-    print(f"{label}: {format_count(summary['requests'])} request(s), "
-          f"{format_count(summary['total_tokens'])} total tokens")
-    print("  input " + format_count(summary["prompt_tokens"]) +
-          " | output " + format_count(summary["completion_tokens"]) +
-          " | reasoning " + format_count(summary["reasoning_tokens"]))
-    print("  cache hit " + format_count(summary["cache_hit_tokens"]) +
-          " | cache miss " + format_count(summary["cache_miss_tokens"]) +
-          " | model time " + f"{summary['elapsed_ms'] / 1000:.1f}s")
+def print_platform_summary(summary: dict[str, Any]) -> None:
+    print("Live DeepSeek Platform account summary")
+    print("  monthly tokens " + str(summary.get("monthly_token_usage", "?")))
+    print("  estimated available tokens " + str(
+        summary.get("total_available_token_estimation", "?")
+    ))
+    print("  current token allowance " + str(summary.get("current_token", "?")))
+    for wallet in summary.get("normal_wallets", []):
+        if isinstance(wallet, dict):
+            print("  wallet " + str(wallet.get("currency", "?")) +
+                  " " + str(wallet.get("balance", "?")) +
+                  " | estimated tokens " + str(wallet.get("token_estimation", "?")))
+    for cost in summary.get("monthly_costs", []):
+        if isinstance(cost, dict):
+            print("  monthly cost " + str(cost.get("currency", "?")) +
+                  " " + str(cost.get("amount", "?")))
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Show token usage recorded by deepseek-cursor-proxy"
+        description="Show the live DeepSeek Platform summary from the browser bridge"
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     parser.add_argument(
-        "--no-balance", action="store_true", help="Do not request the live DeepSeek balance"
-    )
-    parser.add_argument(
-        "--base-url", default="https://api.deepseek.com", help="DeepSeek API base URL"
+        "--proxy-url",
+        default="http://127.0.0.1:9000",
+        help="Local proxy URL used by the browser bridge",
     )
     args = parser.parse_args(argv)
 
-    store = UsageStore(default_usage_path())
     try:
-        result: dict[str, Any] = {
-            "today": store.summary(since=store.start_of_today()),
-            "all_time": store.summary(),
-            "ledger_path": str(store.path),
-        }
-    finally:
-        store.close()
-
-    key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_KEY")
-    balance_error: str | None = None
-    if not args.no_balance:
-        if key:
-            try:
-                result["balance"] = fetch_balance(key, args.base_url)
-            except (HTTPError, URLError, ValueError, json.JSONDecodeError) as exc:
-                balance_error = str(exc)
+        summary = fetch_platform_summary(args.proxy_url)
+    except (HTTPError, URLError, ValueError, json.JSONDecodeError) as exc:
+        message = (
+            "No live platform summary yet. Open and refresh "
+            "https://platform.deepseek.com/usage with the bridge extension enabled."
+        )
+        if args.json:
+            print(json.dumps({"error": message, "details": str(exc)}, indent=2))
         else:
-            balance_error = "Set DEEPSEEK_API_KEY to include live balance."
+            print(message)
+        return 1
 
     if args.json:
-        if balance_error:
-            result["balance_error"] = balance_error
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
-
-    print("DeepSeek via Cursor proxy")
-    print_summary("Today", result["today"])
-    print_summary("All time", result["all_time"])
-    if "balance" in result:
-        balance = result["balance"]
-        available = "available" if balance.get("is_available") else "unavailable"
-        print(f"Live DeepSeek balance: {available}")
-        for info in balance.get("balance_infos", []):
-            if isinstance(info, dict):
-                print(
-                    "  " + str(info.get("currency", "?")) +
-                    " total " + str(info.get("total_balance", "?")) +
-                    " | topped up " + str(info.get("topped_up_balance", "?")) +
-                    " | granted " + str(info.get("granted_balance", "?"))
-                )
-    elif balance_error:
-        print(f"Live balance: not checked ({balance_error})")
-    print(f"Ledger: {result['ledger_path']}")
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print_platform_summary(summary)
     return 0
 
 

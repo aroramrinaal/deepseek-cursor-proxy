@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>DeepSeek Usage Bridge</title>
+    <style>
+      body { font: 14px -apple-system, BlinkMacSystemFont, sans-serif; margin: 28px; max-width: 620px; }
+      label { display: block; font-weight: 600; margin-top: 18px; }
+      input { box-sizing: border-box; margin-top: 6px; padding: 9px; width: 100%; }
+      button { margin-top: 18px; padding: 9px 14px; }
+      #status { color: #147a3d; margin-left: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>DeepSeek Usage Bridge</h1>
+    <p>This extension forwards only the Usage-page summary response to your local proxy. It does not read or store your DeepSeek login credentials.</p>
+    <label for="proxy-url">Local proxy URL</label>
+    <input id="proxy-url" value="http://127.0.0.1:9000">
+    <label for="bridge-token">Local bridge key</label>
+    <input id="bridge-token" type="password" autocomplete="off">
+    <button id="save">Save</button><span id="status"></span>
+    <script src="options.js"></script>
+  </body>
+</html>

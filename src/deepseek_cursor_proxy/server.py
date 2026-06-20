@@ -7,6 +7,7 @@ from http.client import HTTPException
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import secrets
 import sys
 import time
 from typing import Any
@@ -19,13 +20,13 @@ from .config import (
     ProxyConfig,
     default_config_path,
     default_reasoning_content_path,
-    default_usage_path,
 )
 from .logging import (
     LOG,
     TerminalSpinner,
     configure_logging,
 )
+from .platform_summary import PlatformSummaryStore, browser_bridge_token
 from .reasoning_store import ReasoningStore, conversation_scope
 from .streaming import CursorReasoningDisplayAdapter, StreamAccumulator
 from .trace import TraceRequest, TraceWriter
@@ -35,7 +36,6 @@ from .transform import (
     prepare_upstream_request,
     rewrite_response_body,
 )
-from .usage_store import UsageStore
 
 
 class RequestBodyTooLarge(ValueError):
@@ -52,7 +52,8 @@ class DeepSeekProxyServer(ThreadingHTTPServer):
     config: ProxyConfig
     reasoning_store: ReasoningStore
     trace_writer: TraceWriter | None
-    usage_store: UsageStore | None
+    platform_summary_store: PlatformSummaryStore
+    browser_bridge_token: str
 
 
 class DeepSeekProxyHandler(BaseHTTPRequestHandler):
@@ -71,8 +72,8 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         return getattr(self.server, "trace_writer", None)
 
     @property
-    def usage_store(self) -> UsageStore | None:
-        return getattr(self.server, "usage_store", None)
+    def platform_summary_store(self) -> PlatformSummaryStore | None:
+        return getattr(self.server, "platform_summary_store", None)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -85,7 +86,12 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 request_path,
                 self.client_address[0],
             )
-        self._send_response_headers(204, [], "sending CORS preflight response")
+        self._send_response_headers(
+            204,
+            [],
+            "sending CORS preflight response",
+            browser_bridge=request_path in {"/platform-summary", "/v1/platform-summary"},
+        )
 
     def do_GET(self) -> None:
         request_path = urlparse(self.path).path
@@ -93,6 +99,32 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             LOG.info("incoming GET %s from %s", request_path, self.client_address[0])
         if request_path in {"/healthz", "/v1/healthz"}:
             self._send_json(200, {"ok": True})
+            return
+        if request_path in {"/platform-summary", "/v1/platform-summary"}:
+            if not self._has_browser_bridge_token():
+                self._send_json(
+                    403,
+                    {"error": {"message": "Invalid browser bridge token"}},
+                    browser_bridge=True,
+                )
+                return
+            store = self.platform_summary_store
+            snapshot = store.snapshot() if store is not None else None
+            if snapshot is None:
+                self._send_json(
+                    404,
+                    {
+                        "error": {
+                            "message": (
+                                "No browser summary yet. Open the DeepSeek Usage page "
+                                "and refresh it with the bridge extension enabled."
+                            )
+                        }
+                    },
+                    browser_bridge=True,
+                )
+                return
+            self._send_json(200, snapshot, browser_bridge=True)
             return
         if request_path in {"/models", "/v1/models"}:
             self._send_models()
@@ -102,6 +134,9 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         started = time.monotonic()
         request_path = urlparse(self.path).path
+        if request_path in {"/platform-summary", "/v1/platform-summary"}:
+            self._receive_platform_summary()
+            return
         trace = self._start_trace(request_path)
         if self.config.verbose:
             LOG.info(
@@ -323,13 +358,6 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                         record_response_messages=prepared.record_response_messages,
                         record_response_contexts=prepared.record_response_contexts,
                     )
-                if self.usage_store is not None:
-                    self.usage_store.record(
-                        sent_response.usage,
-                        model=prepared.original_model,
-                        streamed=bool(prepared.payload.get("stream")),
-                        elapsed_ms=elapsed_ms(started),
-                    )
                 if not sent_response.sent:
                     spinner.stop()
                     self._finish_trace(
@@ -385,6 +413,37 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             return None
         return f"Bearer {token.strip()}"
 
+    def _has_browser_bridge_token(self) -> bool:
+        received = self.headers.get("X-DeepSeek-Bridge-Token", "")
+        expected = getattr(self.server, "browser_bridge_token", "")
+        return bool(expected) and secrets.compare_digest(received, expected)
+
+    def _receive_platform_summary(self) -> None:
+        if not self._has_browser_bridge_token():
+            self._send_json(
+                403,
+                {"error": {"message": "Invalid browser bridge token"}},
+                browser_bridge=True,
+            )
+            return
+        try:
+            payload = self._read_json_body()
+            store = self.platform_summary_store
+            if store is None:
+                raise ValueError("Browser summary store is unavailable")
+            summary = store.update(payload)
+        except RequestBodyTooLarge as exc:
+            self._send_json(413, {"error": {"message": str(exc)}}, browser_bridge=True)
+            return
+        except ValueError as exc:
+            self._send_json(400, {"error": {"message": str(exc)}}, browser_bridge=True)
+            return
+        self._send_json(
+            200,
+            {"ok": True, "received_at": summary.received_at},
+            browser_bridge=True,
+        )
+
     def _send_cors_headers(self) -> None:
         if not self.config.cors:
             return
@@ -403,6 +462,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         payload: dict[str, Any],
         *,
         trace: TraceRequest | None = None,
+        browser_bridge: bool = False,
     ) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
@@ -423,6 +483,7 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
                 ("Content-Length", str(len(body))),
             ],
             "sending JSON response headers",
+            browser_bridge=browser_bridge,
         )
         if sent_headers:
             self._write_to_client(body, "sending JSON response body")
@@ -432,10 +493,15 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
         status: int,
         headers: list[tuple[str, str]],
         disconnect_context: str,
+        *,
+        browser_bridge: bool = False,
     ) -> bool:
         try:
             self.send_response(status)
-            self._send_cors_headers()
+            if browser_bridge:
+                self._send_browser_bridge_cors_headers()
+            else:
+                self._send_cors_headers()
             for name, value in headers:
                 self.send_header(name, value)
             self.end_headers()
@@ -443,6 +509,13 @@ class DeepSeekProxyHandler(BaseHTTPRequestHandler):
             LOG.warning("client disconnected while %s: %s", disconnect_context, exc)
             return False
         return True
+
+    def _send_browser_bridge_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers", "Content-Type, X-DeepSeek-Bridge-Token"
+        )
 
     def _write_to_client(
         self,
@@ -1317,12 +1390,12 @@ def main(argv: list[str] | None = None) -> int:
         max_age_seconds=config.reasoning_cache_max_age_seconds,
         max_rows=config.reasoning_cache_max_rows,
     )
-    usage_store = UsageStore(default_usage_path())
+    platform_summary_store = PlatformSummaryStore()
+    bridge_token = browser_bridge_token()
     if args.clear_reasoning_cache:
         deleted = store.clear()
         LOG.info("cleared %s reasoning cache row(s)", deleted)
         store.close()
-        usage_store.close()
         return 0
     trace_writer: TraceWriter | None = None
     if config.trace_dir is not None:
@@ -1331,13 +1404,13 @@ def main(argv: list[str] | None = None) -> int:
         except OSError as exc:
             LOG.error("failed to initialize trace directory: %s", exc)
             store.close()
-            usage_store.close()
             return 2
     server = DeepSeekProxyServer((config.host, config.port), DeepSeekProxyHandler)
     server.config = config
     server.reasoning_store = store
     server.trace_writer = trace_writer
-    server.usage_store = usage_store
+    server.platform_summary_store = platform_summary_store
+    server.browser_bridge_token = bridge_token
 
     tunnel: NgrokTunnel | None = None
     public_url: str | None = None
@@ -1350,7 +1423,6 @@ def main(argv: list[str] | None = None) -> int:
             LOG.error("%s", exc)
             server.server_close()
             store.close()
-            usage_store.close()
             return 2
     local_base_url = f"http://{config.host}:{config.port}/v1"
     api_base_url = (
@@ -1394,7 +1466,6 @@ def main(argv: list[str] | None = None) -> int:
             tunnel.stop()
         server.server_close()
         store.close()
-        usage_store.close()
     return 0
 
 

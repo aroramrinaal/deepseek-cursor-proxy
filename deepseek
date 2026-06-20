@@ -9,7 +9,7 @@ PROXY_ARGS=()
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    start|stop|restart|status|stats|help|-h|--help)
+    start|stop|restart|status|stats|bridge-key|help|-h|--help)
       ACTION="$1"
       shift
       ;;
@@ -82,6 +82,16 @@ show_stats() {
   exit 1
 }
 
+show_bridge_key() {
+  if [[ -x "$VENV_BIN/python" ]]; then
+    exec env PYTHONPATH="$(pythonpath_env)" "$VENV_BIN/python" -m deepseek_cursor_proxy.platform_summary
+  elif command -v uv >/dev/null 2>&1; then
+    exec env PYTHONPATH="$(pythonpath_env)" uv run python -m deepseek_cursor_proxy.platform_summary
+  fi
+  echo "Python environment not found. Run 'uv sync' first." >&2
+  exit 1
+}
+
 is_proxy_running() {
   lsof -tiTCP:9000 -sTCP:LISTEN >/dev/null 2>&1
 }
@@ -117,6 +127,9 @@ case "$ACTION" in
   stats)
     show_stats "$@"
     ;;
+  bridge-key)
+    show_bridge_key
+    ;;
   help|-h|--help)
     cat <<'EOF'
 Usage:
@@ -125,13 +138,14 @@ Usage:
   deepseek stop           Stop the proxy
   deepseek restart        Restart the proxy
   deepseek status         Show whether port 9000 is in use
-  deepseek stats          Show proxy-recorded token totals and DeepSeek balance
+  deepseek stats          Show live account-wide platform usage from the browser bridge
+  deepseek bridge-key     Print the local key used by the browser bridge
 
 Examples:
   deepseek --verbose
   deepseek start --no-ngrok
   deepseek restart --ngrok-url https://your-subdomain.ngrok.dev
-  DEEPSEEK_API_KEY=... deepseek stats
+  deepseek stats --json
 EOF
     ;;
   *)
